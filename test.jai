@@ -2,8 +2,10 @@
 #import "File";
 #import "String";
 #import "Socket";
-#import "Jai_Lexer";
-
+#import "SDL";
+#if OS == .MACOS {
+    #import "macos";
+}
 // Import from a module
 #import, file "ascii.jai";
 
@@ -29,6 +31,19 @@ testloops :: () {
 	}
 }
 
+close_and_reset :: (sockfd: s32) {
+	//close(sockfd);
+	sockfd = -1;
+}
+
+handleEncryption :: (sockfd: s32, info: *addrinfo) -> bool {
+	// Check if encryption is needed
+
+	// If so, encrypt the socket
+	return true;
+}
+
+
 readfile :: (filename: string) -> string {
 	print("Filename to open: %\n", filename);
 	text, TF := read_entire_file(filename);
@@ -51,16 +66,17 @@ sendHttpRequest :: (url: string) {
 
 	hostname := url;
 	urlpath := "/";
-	if begins_with(url, "http") && contains(url, "://") {
-		hostname = replace(url, "http://", "");
-	} else if begins_with(url, "https") && contains(url, "://") {
+	if begins_with(url, "https") && contains(url, "://") {
 		hostname = replace(url, "https://", "");
+	} else if begins_with(url, "http") && contains(url, "://") {
+		hostname = replace(url, "http://", "");
 	} else if contains(url, "://") {
 		hostname = replace(url, "://", "");
 	}
 
 	if contains(hostname, "/") {
 		hostnameSplit := split(hostname, "/");
+		hostname = hostnameSplit[0];
 
 		urlpath = "";
 		for i:1..hostnameSplit.count-1 {
@@ -75,10 +91,9 @@ sendHttpRequest :: (url: string) {
 			}
 		}
 
-		hostname = hostnameSplit[0];
 	}
 
-	print("In http request handler for url: %\n", url);
+	print("In http request handler for url: %. Hostname: %\n", url, hostname);
 
 	// Create socket
 	// What is the "." before SOCK_STREAM?
@@ -88,15 +103,7 @@ sendHttpRequest :: (url: string) {
 		return;
 	}
 
-
-	foundip := gethostbyname(to_c_string(hostname));
-	if foundip.h_length == 0 {
-		print("Error getting ip\n");
-		return;
-	}
-
-	// IPv6 garbage  with underscores?
-	//print("Found ip % for domain '%'\n", foundip.h_addr_list, hostname);
+	print("Successfully opened socket %\n", sockfd);
 
 	// What is SOL and REUSEADDR?
 	// Sets socket options in the background. No variable change
@@ -104,11 +111,12 @@ sendHttpRequest :: (url: string) {
 	optval := 1;
 	if setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, *optval, 4) < 0 {
 		print("Error setting socket options\n");
+		close_and_reset(sockfd);
 		return;
 	}
 
 	startIP := "0.0.0.0";
-	foundIP := "216.239.32.21";
+	//foundIP := "216.239.32.21";
 
 	// Just a few protocols
 	selectedPort := "80";
@@ -122,12 +130,14 @@ sendHttpRequest :: (url: string) {
 	if bindRet < 0 {
 		err := get_last_socket_error();
 		print("Error binding socket to % (%): %\n", startIP, bindRet, err);
+		close_and_reset(sockfd);
 		return;
 	}
 
 
 	// Connect to socket
-	print("Successfully bound socket to %. Now connecting to IP % on port %\n", startIP, foundIP, selectedPort);
+	//print("Successfully bound socket to %. Now connecting to IP % on port %\n", startIP, foundIP, selectedPort);
+	print("Successfully bound socket to %. Now connecting on port %\n", startIP, selectedPort);
 
 	// What is htons?
 
@@ -144,63 +154,64 @@ sendHttpRequest :: (url: string) {
     result := getaddrinfo(c_hostname, c_port, *hints, *info);
     if result {
 		err := get_last_socket_error();
-		print("Error connecting to %: %\n", foundIP, err);
+		print("Error connecting to %: %\n", hostname, err);
+		close_and_reset(sockfd);
 		return;
 	}
 
     defer freeaddrinfo(info);
 
-	/*
-	ipsize := 14;
-	newIP : [ipsize]u8;
-	destConfig : sockaddr; 
-	for i:0..foundIP.count-1 {
-		newIP[i] = foundIP[i];
-	}
-    destConfig.sa_family = AF_INET;
-    destConfig.sa_data = newIP;
-	*/
-
-
 	configLength : socklen_t = 14;
 	connectRet := connect(sockfd, info.ai_addr, info.ai_addrlen);
 	if connectRet < 0 {
 		err := get_last_socket_error();
-		print("Error connecting to % (%): %\n", foundIP, connectRet, err);
+		print("Error connecting % (%): %n", hostname, connectRet, err);
+
+		close_and_reset(sockfd);
 		return;
 	}
 
-	print("Successfully connected to %\n", foundIP);
+	print("Successfully connected to %\n", hostname);
+
+
+	encryptionFailed := handleEncryption(sockfd, info);
+	if encryptionFailed {
+		close_and_reset(sockfd);
+		return;
+	}
+
 
 	data := sprint("GET % HTTP/1.1\nHost: %\n\n", urlpath, hostname);
-	print("Sending data: '%'\n", data);
+	print("Sending data: \n%\n", data);
 
 	resp := write(sockfd, data);
-	//resp := send(sockfd, cast(*void) data, xx data.count, 0);
 	if resp < 0 {
 		err := get_last_socket_error();
-
 		print("Error sending data (%): %\n", resp, err);
+
+		close_and_reset(sockfd);
 		return;
 	}
 
-	print("Successfully sent data to %\n", foundIP);
+	print("Successfully sent data to %\n", hostname);
 
 	// Read response
-	response : [1024]u8;
+	response : [4096]u8;
 	recvd := recv(sockfd, *response, 1024, 0);
 	if recvd < 0 {
 		err := get_last_socket_error();
 		print("Error receiving data (%): %\n", recvd, err);
+		close_and_reset(sockfd);
 		return;
 	}
 
 	if recvd == 0 {
 		print("No data received\n");
+		close_and_reset(sockfd);
 		return;
 	}
 
-	print("Successfully received data from %\n\n", foundIP);
+	print("Successfully received data from %\n\n", hostname);
 
 	fullString := "";
 	for i:0..recvd-1 {
@@ -222,15 +233,39 @@ sendHttpRequest :: (url: string) {
 	print("%\nStatus: %\n", fullString, statusCode);
 }
 
+cell_size    : u16 : 66;
+between_box  : u16 : 1;
+padding      : u16 : 20;
+
+full_size    : u16 : cell_size*9 + between_box*2 + padding*2 + 1;
 openWindow :: () {
 	print("In open windows window\n");
+
+	SDL_Init(SDL_INIT_VIDEO);
+
+    window := SDL_CreateWindow(
+		"Jaidoku",
+        SDL_WINDOWPOS_CENTERED, 
+		SDL_WINDOWPOS_CENTERED,
+        full_size, full_size,
+        SDL_WINDOW_OPENGL
+	);
+
+	if window == null {
+        print("Could not create window: %\n", to_string(SDL_GetError()));
+        return;
+    }
+
+    renderer := SDL_CreateRenderer(window, -1, 0);
+
+
 }
 
 main :: () {
 	print("\n\n\nHello world\n");
 
+	/*
 	testloops();
-
 	filenames : [1]string = string.["test.jai"];
 	for filenames {
 		filedata := readfile(it);
@@ -246,8 +281,11 @@ main :: () {
 			print("Failed to write data to %\n", filename);
 		}
 	}
+	*/
 
-	sendHttpRequest("http://shuffler.io/api/v1/getinfo");
+	//sendHttpRequest("http://shuffler.io/api/v1/getinfo");
+	//sendHttpRequest("https://shuffler.io/api/v1/getinfo");
 	
+	print("\n\nStart");
 	openWindow();
 }
