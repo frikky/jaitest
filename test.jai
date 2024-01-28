@@ -2,10 +2,10 @@
 #import "File";
 #import "String";
 #import "Socket";
-//#import "Http";
+#import "Jai_Lexer";
 
 // Import from a module
-// module :: #import, file "themodule/module.jai";
+#import, file "ascii.jai";
 
 testloops :: () {
 	filename := "Hello";
@@ -50,15 +50,33 @@ sendHttpRequest :: (url: string) {
 	// : *u8 = static?
 
 	hostname := url;
+	urlpath := "/";
 	if begins_with(url, "http") && contains(url, "://") {
 		hostname = replace(url, "http://", "");
+	} else if begins_with(url, "https") && contains(url, "://") {
+		hostname = replace(url, "https://", "");
+	} else if contains(url, "://") {
+		hostname = replace(url, "://", "");
 	}
 
 	if contains(hostname, "/") {
-		hostname = split(hostname, "/")[0];
-	}
+		hostnameSplit := split(hostname, "/");
 
-	print("New url: %\n", hostname);
+		urlpath = "";
+		for i:1..hostnameSplit.count-1 {
+			if contains(hostnameSplit[i], "?") {
+				hostnameSplit[i] = split(hostnameSplit[i], "?")[0];
+				break;
+			} else if contains(hostnameSplit[i], "#") {
+				hostnameSplit[i] = split(hostnameSplit[i], "#")[0];
+				break;
+			} else {
+				urlpath = join(urlpath, "/", hostnameSplit[i]);
+			}
+		}
+
+		hostname = hostnameSplit[0];
+	}
 
 	print("In http request handler for url: %\n", url);
 
@@ -79,7 +97,6 @@ sendHttpRequest :: (url: string) {
 
 	// IPv6 garbage  with underscores?
 	//print("Found ip % for domain '%'\n", foundip.h_addr_list, hostname);
-	//print("Found ip % for domain '%'\n", foundip.h_addr_list, hostname);
 
 	// What is SOL and REUSEADDR?
 	// Sets socket options in the background. No variable change
@@ -92,7 +109,14 @@ sendHttpRequest :: (url: string) {
 
 	startIP := "0.0.0.0";
 	foundIP := "216.239.32.21";
+
+	// Just a few protocols
 	selectedPort := "80";
+	if contains(url, "ftp:") {
+		selectedPort = "21";
+	} else if contains(url, "https:") {
+		selectedPort = "443";
+	}
 
 	bindRet := bind(sockfd, startIP, 30000);
 	if bindRet < 0 {
@@ -103,11 +127,9 @@ sendHttpRequest :: (url: string) {
 
 
 	// Connect to socket
-
 	print("Successfully bound socket to %. Now connecting to IP % on port %\n", startIP, foundIP, selectedPort);
 
 	// What is htons?
-	//connect :: (s: SOCKET, name: *sockaddr, namelen: s32) -> s32 #foreign ws2_32;
 
 	// https://github.com/rluba/twitch_irc/blob/master/module.jai
 	hints : addrinfo;
@@ -125,8 +147,8 @@ sendHttpRequest :: (url: string) {
 		print("Error connecting to %: %\n", foundIP, err);
 		return;
 	}
-    defer freeaddrinfo(info);
 
+    defer freeaddrinfo(info);
 
 	/*
 	ipsize := 14;
@@ -141,7 +163,6 @@ sendHttpRequest :: (url: string) {
 
 
 	configLength : socklen_t = 14;
-	//connectRet := connect(sockfd, *destConfig, foundIP.count);
 	connectRet := connect(sockfd, info.ai_addr, info.ai_addrlen);
 	if connectRet < 0 {
 		err := get_last_socket_error();
@@ -151,7 +172,9 @@ sendHttpRequest :: (url: string) {
 
 	print("Successfully connected to %\n", foundIP);
 
-	data := "GET / HTTP/1.1\r\nHost: %\r\n\r\n";
+	data := sprint("GET % HTTP/1.1\nHost: %\n\n", urlpath, hostname);
+	print("Sending data: '%'\n", data);
+
 	resp := write(sockfd, data);
 	//resp := send(sockfd, cast(*void) data, xx data.count, 0);
 	if resp < 0 {
@@ -177,11 +200,26 @@ sendHttpRequest :: (url: string) {
 		return;
 	}
 
-	print("Successfully received data from %: %\n", foundIP, response);
+	print("Successfully received data from %\n\n", foundIP);
+
+	fullString := "";
 	for i:0..recvd-1 {
-		print("%", atoi(response[i]));
+		resp := get_letter(response[i]);
+		fullString = join(fullString, resp);
 	}
 
+	httpVersion := "";
+	statusCode := -1;
+	splitString := split(fullString, "\n");
+	for splitString {
+		if contains(it, "HTTP/") {
+			stringSplit := split(it, " ");
+			httpVersion = stringSplit[0];
+			statusCode = string_to_int(stringSplit[1]);
+		}
+	}
+
+	print("%\nStatus: %\n", fullString, statusCode);
 }
 
 openWindow :: () {
